@@ -70,6 +70,10 @@ import org.apache.hadoop.hive.ql.plan.MoveWork;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.ql.plan.SparkWork;
 import org.apache.hadoop.hive.ql.session.SessionState.LogHelper;
+import org.apache.hadoop.hive.ql.optimizer.physical.PhysicalOptimizer;
+import org.apache.hadoop.hive.ql.exec.MapJoinOperator;
+import org.apache.hadoop.hive.ql.optimizer.ConvertJoinMapJoin;
+import org.apache.hadoop.hive.ql.optimizer.MapJoinFactory;
 
 /**
  * SparkCompiler translates the operator plan into SparkTasks.
@@ -114,6 +118,9 @@ public class SparkCompiler extends TaskCompiler {
     // TODO: need to research and verify support convert join to map join optimization.
     //opRules.put(new RuleRegExp(new String("Convert Join to Map-join"),
     //    JoinOperator.getOperatorName() + "%"), new ConvertJoinMapJoin());
+    opRules.put(new RuleRegExp("Map Join Operator",
+        MapJoinOperator.getOperatorName() + "%"),
+        MapJoinFactory.getTableScanMapJoin());
 
     // The dispatcher fires the processor corresponding to the closest matching
     // rule and passes the context along
@@ -195,6 +202,9 @@ public class SparkCompiler extends TaskCompiler {
               }
             },
             new SparkProcessAnalyzeTable(GenSparkUtils.getUtils())));
+    opRules.put(new RuleRegExp("Map Join Operator",
+        MapJoinOperator.getOperatorName() + "%"),
+        MapJoinFactory.getTableScanMapJoin());
 
     opRules.put(new RuleRegExp("Remember union", UnionOperator.getOperatorName() + "%"),
         new NodeProcessor() {
@@ -311,6 +321,10 @@ public class SparkCompiler extends TaskCompiler {
     } else {
       LOG.debug("Skipping stage id rearranger");
     }
+    PhysicalOptimizer physicalOptimizer = new PhysicalOptimizer(
+            physicalCtx, conf);
+    physicalOptimizer.optimize();
+    
     return;
   }
 }

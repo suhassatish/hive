@@ -77,6 +77,7 @@ import org.apache.hadoop.hive.ql.plan.PartitionDesc;
 import org.apache.hadoop.hive.ql.plan.PlanUtils;
 import org.apache.hadoop.hive.ql.plan.SMBJoinDesc;
 import org.apache.hadoop.hive.ql.plan.SelectDesc;
+import org.apache.hadoop.hive.ql.plan.SparkWork;
 import org.apache.hadoop.hive.ql.plan.TableDesc;
 import org.apache.hadoop.hive.serde.serdeConstants;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory;
@@ -235,6 +236,27 @@ public class MapJoinProcessor implements Transform {
     // generate the map join operator; already checked the map join
     MapJoinOperator newMapJoinOp = MapJoinProcessor.convertMapJoin(conf, opParseCtxMap, op,
         newJoinTree, mapJoinPos, true, false);
+    genLocalWorkForMapJoin(newWork, newMapJoinOp, mapJoinPos);
+  }
+
+  /**
+   * Convert the join to a map-join and also generate any local work needed.
+   *
+   * @param newWork MapredWork in which the conversion is to happen
+   * @param op
+   *          The join operator that needs to be converted to map-join
+   * @param mapJoinPos
+   * @throws SemanticException
+   */
+  public static void genSparkMapJoinOpAndLocalWork(HiveConf conf, SparkWork newWork,
+                                              JoinOperator op, int mapJoinPos)
+          throws SemanticException {
+    LinkedHashMap<Operator<? extends OperatorDesc>, OpParseContext> opParseCtxMap =
+            newWork.getMapWork().getOpParseCtxMap();
+    QBJoinTree newJoinTree = newWork.getMapWork().getJoinTree();
+    // generate the map join operator; already checked the map join
+    MapJoinOperator newMapJoinOp = MapJoinProcessor.convertMapJoin(conf, opParseCtxMap, op,
+            newJoinTree, mapJoinPos, true, false);
     genLocalWorkForMapJoin(newWork, newMapJoinOp, mapJoinPos);
   }
 

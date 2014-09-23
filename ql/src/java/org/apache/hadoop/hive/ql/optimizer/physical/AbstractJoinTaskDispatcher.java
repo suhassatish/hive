@@ -36,6 +36,7 @@ import org.apache.hadoop.hive.ql.lib.TaskGraphWalker.TaskGraphWalkerContext;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
 import org.apache.hadoop.hive.ql.plan.MapredWork;
 import org.apache.hadoop.hive.ql.plan.MapWork;
+import org.apache.hadoop.hive.ql.exec.spark.SparkTask;
 
 /**
  * Common iteration methods for converting joins and sort-merge joins.
@@ -51,6 +52,11 @@ public abstract class AbstractJoinTaskDispatcher implements Dispatcher {
   public abstract Task<? extends Serializable> processCurrentTask(MapRedTask currTask,
       ConditionalTask conditionalTask, Context context)
       throws SemanticException;
+
+  public abstract Task<? extends Serializable> processCurrentSparkTask(SparkTask currTask,
+      ConditionalTask conditionalTask, Context context)
+          throws SemanticException;
+
 
   protected void replaceTaskWithConditionalTask(
       Task<? extends Serializable> currTask, ConditionalTask cndTsk,
@@ -178,6 +184,10 @@ public abstract class AbstractJoinTaskDispatcher implements Dispatcher {
             walkerCtx.addToDispatchList(newTask);
           }
         }
+      } else if (currTask instanceof SparkTask) {
+          Task<? extends Serializable> newTask =
+                this.processCurrentSparkTask((SparkTask) currTask, null, physicalContext.getContext());
+          walkerCtx.addToDispatchList(newTask);
       } else {
         Task<? extends Serializable> newTask =
             this.processCurrentTask((MapRedTask) currTask, null, physicalContext.getContext());

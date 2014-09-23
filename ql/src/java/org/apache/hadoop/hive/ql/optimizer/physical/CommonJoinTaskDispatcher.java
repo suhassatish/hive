@@ -21,6 +21,7 @@ import java.io.Serializable;
 import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -43,12 +44,14 @@ import org.apache.hadoop.hive.ql.exec.Task;
 import org.apache.hadoop.hive.ql.exec.TaskFactory;
 import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.exec.mr.MapRedTask;
+import org.apache.hadoop.hive.ql.exec.spark.SparkTask;
 import org.apache.hadoop.hive.ql.lib.Dispatcher;
 import org.apache.hadoop.hive.ql.optimizer.GenMapRedUtils;
 import org.apache.hadoop.hive.ql.optimizer.MapJoinProcessor;
 import org.apache.hadoop.hive.ql.parse.ParseContext;
 import org.apache.hadoop.hive.ql.parse.QBJoinTree;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
+import org.apache.hadoop.hive.ql.plan.BaseWork;
 import org.apache.hadoop.hive.ql.plan.ConditionalResolverCommonJoin;
 import org.apache.hadoop.hive.ql.plan.ConditionalResolverCommonJoin.ConditionalResolverCommonJoinCtx;
 import org.apache.hadoop.hive.ql.plan.ConditionalWork;
@@ -58,6 +61,7 @@ import org.apache.hadoop.hive.ql.plan.MapredLocalWork;
 import org.apache.hadoop.hive.ql.plan.MapredWork;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.ql.plan.ReduceWork;
+import org.apache.hadoop.hive.ql.plan.SparkWork;
 
 /*
  * Convert tasks involving JOIN into MAPJOIN.
@@ -182,6 +186,21 @@ public class CommonJoinTaskDispatcher extends AbstractJoinTaskDispatcher impleme
         newWork, newJoinOp, bigTablePosition);
     return newTask;
   }
+  
+//create map join spark task and set big table as bigTablePosition
+  @SuppressWarnings("unchecked")
+	private SparkTask convertTaskToMapJoinTask(SparkWork newWork,
+			int bigTablePosition) {
+    // create a spark task for this work
+    SparkTask newTask = (SparkTask) TaskFactory.get(newWork, physicalContext
+        .getParseContext().getConf());
+    JoinOperator newJoinOp = getJoinOp(newTask);
+
+    // optimize this newWork given the big table position
+    MapJoinProcessor.genSparkMapJoinOpAndLocalWork(physicalContext.getParseContext().getConf(),
+        newWork, newJoinOp, bigTablePosition);
+    return newTask;		
+	}
 
   /*
    * A task and its child task has been converted from join to mapjoin.
@@ -543,7 +562,194 @@ public class CommonJoinTaskDispatcher extends AbstractJoinTaskDispatcher impleme
     return cndTsk;
   }
 
-  /*
+  @Override
+  public Task<? extends Serializable> processCurrentSparkTask(SparkTask currTask,
+                                                         ConditionalTask conditionalTask, Context context)
+          throws SemanticException {
+
+    // whether it contains common join op; if contains, return this common join op
+    JoinOperator joinOp = getJoinOp(currTask);
+    if (joinOp == null || joinOp.getConf().isFixedAsSorted()) {
+      return null;
+    }    
+    currTask.setTaskTag(Task.COMMON_JOIN);
+
+    Collection<MapWork> currMapWorks = (List<MapWork>) currTask.getMapWork();
+
+    //TODO enable conditional task later, as improvement of HIVE-7613
+    // create conditional work list and task list
+    //List<Serializable> listWorks = new ArrayList<Serializable>();
+    //List<Task<? extends Serializable>> listTasks = new ArrayList<Task<? extends Serializable>>();
+
+    for (MapWork currMapWork : currMapWorks) {
+      // create task to aliases mapping and alias to input file mapping for resolver
+      HashMap<Task<? extends Serializable>, Set<String>> taskToAliases =
+              new HashMap<Task<? extends Serializable>, Set<String>>();
+      
+    	HashMap<String, ArrayList<String>> pathToAliases = currMapWork.getPathToAliases();
+      Map<String, Operator<? extends OperatorDesc>> aliasToWork = currMapWork.getAliasToWork();
+      
+      // get parseCtx for this Join Operator
+      ParseContext parseCtx = physicalContext.getParseContext();
+      QBJoinTree joinTree = parseCtx.getJoinContext().get(joinOp);
+
+      // start to generate multiple map join tasks
+      JoinDesc joinDesc = joinOp.getConf();
+      
+      if (aliasToSize == null) {
+        aliasToSize = new HashMap<String, Long>();
+      }
+      
+      try {
+        long aliasTotalKnownInputSize =
+                getTotalKnownInputSize(context, currMapWork, pathToAliases, aliasToSize);
+
+        Set<Integer> bigTableCandidates = MapJoinProcessor.getBigTableCandidates(joinDesc
+                .getConds());
+
+        // no table could be the big table; there is no need to convert
+        if (bigTableCandidates.isEmpty()) {
+          return null;
+        }
+
+        // if any of bigTableCandidates is from multi-sourced, bigTableCandidates should
+        // only contain multi-sourced because multi-sourced cannot be hashed or direct readable
+        bigTableCandidates = multiInsertBigTableCheck(joinOp, bigTableCandidates);
+
+        Configuration conf = context.getConf();
+
+        // If sizes of at least n-1 tables in a n-way join is known, and their sum is smaller than
+        // the threshold size, convert the join into map-join and don't create a conditional task
+        boolean convertJoinMapJoin = HiveConf.getBoolVar(conf,
+                HiveConf.ConfVars.HIVECONVERTJOINNOCONDITIONALTASK);
+        int bigTablePosition = -1;
+        if (convertJoinMapJoin) {
+          // This is the threshold that the user has specified to fit in mapjoin
+          long mapJoinSize = HiveConf.getLongVar(conf,
+                  HiveConf.ConfVars.HIVECONVERTJOINNOCONDITIONALTASKTHRESHOLD);
+
+          Long bigTableSize = null;
+          Set<String> aliases = aliasToWork.keySet();
+          for (int tablePosition : bigTableCandidates) {
+            Operator<?> parent = joinOp.getParentOperators().get(tablePosition);
+            Set<String> participants = GenMapRedUtils.findAliases(currMapWork, parent);
+            long sumOfOthers = Utilities.sumOfExcept(aliasToSize, aliases, participants);
+            if (sumOfOthers < 0 || sumOfOthers > mapJoinSize) {
+              continue; // some small alias is not known or too big
+            }
+            if (bigTableSize == null && bigTablePosition >= 0 && tablePosition < bigTablePosition) {
+              continue; // prefer right most alias
+            }
+            long aliasSize = Utilities.sumOf(aliasToSize, participants);
+            if (bigTableSize == null || bigTableSize < 0 || (aliasSize >= 0 && aliasSize >= bigTableSize)) {
+              bigTablePosition = tablePosition;
+              bigTableSize = aliasSize;
+            }
+          }
+        }
+
+        currMapWork.setOpParseCtxMap(parseCtx.getOpParseCtx());
+        currMapWork.setJoinTree(joinTree);
+
+        if (bigTablePosition >= 0) {
+          // create map join task and set big table as bigTablePosition
+          MapRedTask newTask = convertTaskToMapJoinTask(currTask.getWork(), bigTablePosition);
+
+          newTask.setTaskTag(Task.MAPJOIN_ONLY_NOBACKUP);
+          newTask.setFetchSource(currTask.isFetchSource());
+          replaceTask(currTask, newTask, physicalContext);
+
+          // Can this task be merged with the child task. This can happen if a big table is being
+          // joined with multiple small tables on different keys
+          if ((newTask.getChildTasks() != null) && (newTask.getChildTasks().size() == 1)) {
+            mergeMapJoinTaskIntoItsChildMapRedTask(newTask, conf);
+          }
+
+          return newTask;
+        }
+
+        long ThresholdOfSmallTblSizeSum = HiveConf.getLongVar(conf,
+                HiveConf.ConfVars.HIVESMALLTABLESFILESIZE);
+        for (int pos = 0; pos < joinOp.getNumParent(); pos++) {
+          // this table cannot be big table
+          if (!bigTableCandidates.contains(pos)) {
+            continue;
+          }
+          // deep copy a new mapred work from xml
+          // Once HIVE-4396 is in, it would be faster to use a cheaper method to clone the plan
+          MapredWork newWork = Utilities.clonePlan(currTask.getWork());
+
+          // create map join task and set big table as i
+          MapRedTask newTask = convertTaskToMapJoinTask(newWork, pos);
+
+          Operator<?> startOp = joinOp.getParentOperators().get(pos);
+          Set<String> aliases = GenMapRedUtils.findAliases(currWork, startOp);
+
+          long aliasKnownSize = Utilities.sumOf(aliasToSize, aliases);
+          if (cannotConvert(aliasKnownSize, aliasTotalKnownInputSize, ThresholdOfSmallTblSizeSum)) {
+            continue;
+          }
+
+          // add into conditional task
+          /*
+          listWorks.add(newTask.getWork());
+          listTasks.add(newTask);
+          newTask.setTaskTag(Task.CONVERTED_MAPJOIN);
+          newTask.setFetchSource(currTask.isFetchSource());
+
+          // set up backup task
+          newTask.setBackupTask(currTask);
+          newTask.setBackupChildrenTasks(currTask.getChildTasks());*/
+
+          // put the mapping task to aliases
+          taskToAliases.put(newTask, aliases);
+        }
+      }
+
+    } // end of currMapWorks iteration -----------
+    
+
+    
+    
+
+     catch (Exception e) {
+      e.printStackTrace();
+      throw new SemanticException("Generate Map Join Task Error: " + e.getMessage());
+    }
+
+    // insert current common join task to conditional task
+    /*
+    listWorks.add(currTask.getWork());
+    listTasks.add(currTask);
+    */
+    // clear JoinTree and OP Parse Context
+    currWork.setOpParseCtxMap(null);
+    currWork.setJoinTree(null);
+
+    // create conditional task and insert conditional task into task tree
+    /*
+    ConditionalWork cndWork = new ConditionalWork(listWorks);
+    ConditionalTask cndTsk = (ConditionalTask) TaskFactory.get(cndWork, parseCtx.getConf());
+    cndTsk.setListTasks(listTasks);
+
+    // set resolver and resolver context
+    cndTsk.setResolver(new ConditionalResolverCommonJoin());
+    ConditionalResolverCommonJoinCtx resolverCtx = new ConditionalResolverCommonJoinCtx();
+    resolverCtx.setPathToAliases(pathToAliases);
+    resolverCtx.setAliasToKnownSize(aliasToSize);
+    resolverCtx.setTaskToAliases(taskToAliases);
+    resolverCtx.setCommonJoinTask(currTask);
+    resolverCtx.setLocalTmpDir(context.getLocalScratchDir(false));
+    resolverCtx.setHdfsTmpDir(context.getMRScratchDir());
+    cndTsk.setResolverCtx(resolverCtx);
+
+    // replace the current task with the new generated conditional task
+    replaceTaskWithConditionalTask(currTask, cndTsk, physicalContext);
+    return cndTsk;*/
+  }
+
+
+	/*
    * If any operator which does not allow map-side conversion is present in the mapper, dont
    * convert it into a conditional task.
    */
@@ -585,7 +791,32 @@ public class CommonJoinTaskDispatcher extends AbstractJoinTaskDispatcher impleme
       return null;
     }
   }
-
+  
+  /*
+   * If there are multiple join operators, this will return the first one encountered in the 
+   * operator graph traversal 
+   */
+  private JoinOperator getJoinOp(SparkTask task) throws SemanticException  {
+  	SparkWork sparkWork = task.getWork();
+  	Set<BaseWork> roots = sparkWork.getRoots();
+  	for (BaseWork w : roots) {
+  		while (sparkWork.getChildren(w).size() > 0) {
+  			BaseWork child = sparkWork.getChildren(w).get(0);
+  			if (child instanceof ReduceWork) {
+  				Operator<?> rw = ((ReduceWork) child).getReducer(); 
+  				if (rw instanceof JoinOperator) {
+  					JoinOperator jo = (JoinOperator) rw;
+  					/* TODO: follow-up to HIVE-7613 
+  					 * Check If any operator present, which prevents the conversion */
+  					  //enable checkOperatorOKMapJoinConversion(..)					
+  					return jo; 
+  				}
+  			}  			
+  		}
+  	}
+  	return null;
+ }  	    
+    
 
   /**
    * In the case of a multi-insert statement the Source Operator will have multiple children.
