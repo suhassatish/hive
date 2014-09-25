@@ -70,6 +70,11 @@ import org.apache.hadoop.hive.ql.plan.MoveWork;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.ql.plan.SparkWork;
 import org.apache.hadoop.hive.ql.session.SessionState.LogHelper;
+import org.apache.hadoop.hive.ql.exec.JoinOperator;
+import org.apache.hadoop.hive.ql.optimizer.physical.PhysicalOptimizer;
+import org.apache.hadoop.hive.ql.exec.MapJoinOperator;
+import org.apache.hadoop.hive.ql.optimizer.ConvertJoinMapJoin;
+import org.apache.hadoop.hive.ql.optimizer.MapJoinFactory;
 
 /**
  * SparkCompiler translates the operator plan into SparkTasks.
@@ -117,6 +122,10 @@ public class SparkCompiler extends TaskCompiler {
 
     // The dispatcher fires the processor corresponding to the closest matching
     // rule and passes the context along
+    opRules.put(new RuleRegExp("Map Join Operator",
+        MapJoinOperator.getOperatorName() + "%"),
+        MapJoinFactory.getTableScanMapJoin());
+
     Dispatcher disp = new DefaultRuleDispatcher(null, opRules, procCtx);
     List<Node> topNodes = new ArrayList<Node>();
     topNodes.addAll(pCtx.getTopOps().values());
@@ -195,6 +204,10 @@ public class SparkCompiler extends TaskCompiler {
               }
             },
             new SparkProcessAnalyzeTable(GenSparkUtils.getUtils())));
+
+    opRules.put(new RuleRegExp("Map Join Operator",
+        MapJoinOperator.getOperatorName() + "%"),
+        MapJoinFactory.getTableScanMapJoin());
 
     opRules.put(new RuleRegExp("Remember union", UnionOperator.getOperatorName() + "%"),
         new NodeProcessor() {
@@ -311,6 +324,11 @@ public class SparkCompiler extends TaskCompiler {
     } else {
       LOG.debug("Skipping stage id rearranger");
     }
+
+    PhysicalOptimizer physicalOptimizer = new PhysicalOptimizer(
+            physicalCtx, conf);
+    physicalOptimizer.optimize();
+
     return;
   }
 }

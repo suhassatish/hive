@@ -62,6 +62,8 @@ import org.apache.hadoop.hive.ql.plan.ReduceWork;
 import org.apache.hadoop.hive.ql.plan.TableScanDesc;
 import org.apache.hadoop.hive.ql.plan.TezWork;
 import org.apache.hadoop.hive.ql.session.SessionState;
+import org.apache.hadoop.hive.ql.exec.spark.SparkTask;
+import org.apache.hadoop.hive.ql.plan.SparkWork;
 
 /*
  * Check each MapJoin and ShuffleJoin Operator to see they are performing a cross product.
@@ -121,6 +123,14 @@ public class CrossProductCheck implements PhysicalPlanResolver, Dispatcher {
       TezWork tzWrk = tzTask.getWork();
       checkMapJoins(tzWrk);
       checkTezReducer(tzWrk);
+
+    } else if (currTask instanceof SparkTask) {
+      SparkTask spTask = (SparkTask) currTask;
+      SparkWork spWrk = spTask.getWork();
+      
+      //TODO
+      //enable cross-product checking
+      //checkMapJoins(spWrk);
     }
     return null;
   }

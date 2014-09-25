@@ -40,6 +40,7 @@ import org.apache.hadoop.hive.ql.exec.Task;
 import org.apache.hadoop.hive.ql.exec.TaskFactory;
 import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.exec.mr.MapRedTask;
+import org.apache.hadoop.hive.ql.exec.spark.SparkTask;
 import org.apache.hadoop.hive.ql.lib.Dispatcher;
 import org.apache.hadoop.hive.ql.optimizer.GenMapRedUtils;
 import org.apache.hadoop.hive.ql.optimizer.MapJoinProcessor;
@@ -438,4 +439,12 @@ public class SortMergeJoinTaskDispatcher extends AbstractJoinTaskDispatcher impl
         opParseContextMap, newSMBJoinOp,
         joinTree, mapJoinPos, true);
   }
+
+	@Override
+	public Task<? extends Serializable> processCurrentSparkTask(
+			SparkTask currTask, ConditionalTask conditionalTask, Context context)
+			throws SemanticException {
+		// TODO Auto-generated method stub
+		return null;
+	}
 }
