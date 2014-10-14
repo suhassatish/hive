@@ -54,6 +54,7 @@ import org.apache.hadoop.hive.ql.lib.NodeProcessorCtx;
 import org.apache.hadoop.hive.ql.lib.Rule;
 import org.apache.hadoop.hive.ql.lib.RuleRegExp;
 import org.apache.hadoop.hive.ql.metadata.Hive;
+import org.apache.hadoop.hive.ql.optimizer.spark.SparkConvertJoinMapJoin;
 import org.apache.hadoop.hive.ql.optimizer.physical.CrossProductCheck;
 import org.apache.hadoop.hive.ql.optimizer.physical.NullScanOptimizer;
 import org.apache.hadoop.hive.ql.optimizer.physical.PhysicalContext;
@@ -112,8 +113,8 @@ public class SparkCompiler extends TaskCompiler {
         new SetSparkReducerParallelism());
 
     // TODO: need to research and verify support convert join to map join optimization.
-    //opRules.put(new RuleRegExp(new String("Convert Join to Map-join"),
-    //    JoinOperator.getOperatorName() + "%"), new ConvertJoinMapJoin());
+    opRules.put(new RuleRegExp(new String("Convert Join to Map-join"),
+        JoinOperator.getOperatorName() + "%"), new SparkConvertJoinMapJoin());
 
     // The dispatcher fires the processor corresponding to the closest matching
     // rule and passes the context along
