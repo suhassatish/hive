@@ -34,6 +34,8 @@ import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.Context;
 import org.apache.hadoop.hive.ql.exec.ConditionalTask;
 import org.apache.hadoop.hive.ql.exec.FileSinkOperator;
+import org.apache.hadoop.hive.ql.exec.JoinOperator;
+import org.apache.hadoop.hive.ql.exec.MapJoinOperator;
 import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.exec.ReduceSinkOperator;
 import org.apache.hadoop.hive.ql.exec.TableScanOperator;
@@ -59,6 +61,8 @@ import org.apache.hadoop.hive.ql.optimizer.physical.PhysicalContext;
 import org.apache.hadoop.hive.ql.optimizer.physical.StageIDsRearranger;
 import org.apache.hadoop.hive.ql.optimizer.physical.Vectorizer;
 import org.apache.hadoop.hive.ql.optimizer.spark.SetSparkReducerParallelism;
+import org.apache.hadoop.hive.ql.optimizer.spark.SparkConvertJoinMapJoin;
+import org.apache.hadoop.hive.ql.optimizer.spark.SparkReduceSinkMapJoinProc;
 import org.apache.hadoop.hive.ql.parse.GlobalLimitCtx;
 import org.apache.hadoop.hive.ql.parse.ParseContext;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
@@ -69,7 +73,6 @@ import org.apache.hadoop.hive.ql.plan.MoveWork;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.ql.plan.SparkWork;
 import org.apache.hadoop.hive.ql.session.SessionState.LogHelper;
-
 /**
  * SparkCompiler translates the operator plan into SparkTasks.
  *
@@ -111,8 +114,8 @@ public class SparkCompiler extends TaskCompiler {
         new SetSparkReducerParallelism());
 
     // TODO: need to research and verify support convert join to map join optimization.
-    //opRules.put(new RuleRegExp(new String("Convert Join to Map-join"),
-    //    JoinOperator.getOperatorName() + "%"), new ConvertJoinMapJoin());
+    opRules.put(new RuleRegExp(new String("Convert Join to Map-join"),
+        JoinOperator.getOperatorName() + "%"), new SparkConvertJoinMapJoin());
 
     // The dispatcher fires the processor corresponding to the closest matching
     // rule and passes the context along
@@ -136,7 +139,7 @@ public class SparkCompiler extends TaskCompiler {
     GenSparkWork genSparkWork = new GenSparkWork(GenSparkUtils.getUtils());
 
     GenSparkProcContext procCtx = new GenSparkProcContext(
-        conf, tempParseContext, mvTask, rootTasks, inputs, outputs);
+        conf, tempParseContext, mvTask, rootTasks, inputs, outputs, pCtx.getTopOps());
 
     // create a walker which walks the tree in a DFS manner while maintaining
     // the operator stack. The dispatcher generates the plan from the operator tree
@@ -144,8 +147,8 @@ public class SparkCompiler extends TaskCompiler {
     opRules.put(new RuleRegExp("Split Work - ReduceSink",
         ReduceSinkOperator.getOperatorName() + "%"), genSparkWork);
 
-//    opRules.put(new RuleRegExp("No more walking on ReduceSink-MapJoin",
-//        MapJoinOperator.getOperatorName() + "%"), new ReduceSinkMapJoinProc());
+    opRules.put(new RuleRegExp("No more walking on ReduceSink-MapJoin",
+        MapJoinOperator.getOperatorName() + "%"), new SparkReduceSinkMapJoinProc());
 
     opRules.put(new RuleRegExp("Split Work + Move/Merge - FileSink",
         FileSinkOperator.getOperatorName() + "%"),
@@ -169,6 +172,25 @@ public class SparkCompiler extends TaskCompiler {
           }
         }
     );
+
+    opRules.put(new RuleRegExp("TS-Alias-Gen", TableScanOperator.getOperatorName() + "%"),
+            new NodeProcessor() {
+              @Override
+              public Object process(Node n, Stack<Node> s,
+                                    NodeProcessorCtx procCtx, Object... os) throws SemanticException {
+                TableScanOperator tso = (TableScanOperator) n;
+                // simply remember the table alias, for child operators like SMB Join.
+                GenSparkProcContext context = (GenSparkProcContext) procCtx;
+                context.currentAliasId = tso.getConf().getAlias();
+                context.currentTs = tso;
+                return null;
+              }
+            });
+
+    /*
+    opRules.put(new RuleRegExp("MapJoin",
+        MapJoinOperator.getOperatorName() + "%"),
+        SparkMapJoinFactory.getTableScanMapJoin());*/
 
     // The dispatcher fires the processor corresponding to the closest matching
     // rule and passes the context along
